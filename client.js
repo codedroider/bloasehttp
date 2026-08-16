@@ -69,12 +69,18 @@ clientServer.on('connect', (req, clientSocket, head) => {
         if (serverSocket.writable) serverSocket.write(packData(chunk) + '\n');
     });
 
+    let bufferStr = '';
     serverSocket.on('data', data => {
-        const lines = data.toString().split('\n');
-        for (let line of lines) {
-            if (!line.trim()) continue;
-            const decrypted = unpackData(line);
-            if (decrypted.length > 0 && clientSocket.writable) clientSocket.write(decrypted);
+        bufferStr += data.toString();
+        let boundary = bufferStr.indexOf('\n');
+        while (boundary !== -1) {
+            const line = bufferStr.substring(0, boundary);
+            bufferStr = bufferStr.substring(boundary + 1);
+            if (line.trim()) {
+                const decrypted = unpackData(line);
+                if (decrypted.length > 0 && clientSocket.writable) clientSocket.write(decrypted);
+            }
+            boundary = bufferStr.indexOf('\n');
         }
     });
 
