@@ -15,8 +15,13 @@ function generateGarbage() {
 
 function packData(dataBuffer) {
     const b64 = dataBuffer.toString('base64');
-    const payload = `${generateGarbage()}|${b64}`;
-    return Buffer.concat([Buffer.from(`${Buffer.byteLength(payload)}:`), Buffer.from(payload)]);
+    return `${generateGarbage()}|${b64}\n`;
+}
+
+function unpackData(maskedString) {
+    const parts = maskedString.split('|');
+    if (parts.length < 2) return Buffer.alloc(0);
+    return Buffer.from(parts[1], 'base64');
 }
 
 function handleTunnel(clientSocket, initialData, host, port) {
@@ -32,30 +37,27 @@ function handleTunnel(clientSocket, initialData, host, port) {
         if (serverSocket.writable) serverSocket.write(packData(chunk));
     });
 
-    let buffer = Buffer.alloc(0);
+    let bufferStr = '';
     serverSocket.on('data', data => {
-        buffer = Buffer.concat([buffer, data]);
-        while (true) {
-            const index = buffer.indexOf(':');
-            if (index === -1) break;
-            const length = parseInt(buffer.subarray(0, index).toString());
-            if (isNaN(length)) { buffer = Buffer.alloc(0); break; }
-            if (buffer.length < index + 1 + length) break;
-            
-            const payload = buffer.subarray(index + 1, index + 1 + length).toString();
-            buffer = buffer.subarray(index + 1 + length);
-            
-            const parts = payload.split('|');
-            if (parts.length >= 2 && clientSocket.writable) {
-                clientSocket.write(Buffer.from(parts[1], 'base64'));
+        bufferStr += data.toString('utf8');
+        let boundary = bufferStr.indexOf('\n');
+        while (boundary !== -1) {
+            const line = bufferStr.substring(0, boundary);
+            bufferStr = bufferStr.substring(boundary + 1);
+            if (line.trim()) {
+                const decrypted = unpackData(line);
+                if (decrypted.length > 0 && clientSocket.writable) {
+                    clientSocket.write(decrypted);
+                }
             }
+            boundary = bufferStr.indexOf('\n');
         }
     });
 
     clientSocket.on('error', () => serverSocket.end());
     serverSocket.on('error', () => clientSocket.end());
     clientSocket.on('end', () => serverSocket.end());
-    clientSocket.on('end', () => clientSocket.end());
+    serverSocket.on('end', () => clientSocket.end());
 }
 
 const clientServer = http.createServer((req, res) => {
