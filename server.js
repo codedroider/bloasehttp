@@ -12,48 +12,56 @@ function generateGarbage() {
 
 function packData(dataBuffer) {
     const b64 = dataBuffer.toString('base64');
-    const payload = `${generateGarbage()}|${b64}`;
-    return Buffer.concat([Buffer.from(`${Buffer.byteLength(payload)}:`), Buffer.from(payload)]);
+    return `${generateGarbage()}|${b64}\n`;
+}
+
+function unpackData(maskedString) {
+    const parts = maskedString.split('|');
+    if (parts.length < 2) return Buffer.alloc(0);
+    return Buffer.from(parts[1], 'base64');
 }
 
 const server = net.createServer((socket) => {
     let targetSocket = null;
-    let buffer = Buffer.alloc(0);
+    let bufferString = '';
 
     socket.on('data', chunk => {
-        buffer = Buffer.concat([buffer, chunk]);
-        while (true) {
-            const index = buffer.indexOf(':');
-            if (index === -1) break;
-            const length = parseInt(buffer.subarray(0, index).toString());
-            if (isNaN(length)) { socket.end(); return; }
-            if (buffer.length < index + 1 + length) break;
+        bufferString += chunk.toString('utf8');
+        let boundary = bufferString.indexOf('\n');
+        
+        while (boundary !== -1) {
+            const line = bufferString.substring(0, boundary);
+            bufferString = bufferString.substring(boundary + 1);
             
-            const payload = buffer.subarray(index + 1, index + 1 + length).toString();
-            buffer = buffer.subarray(index + 1 + length);
-            
-            const parts = payload.split('|');
-            if (parts.length < 2) continue;
-            const decrypted = Buffer.from(parts[1], 'base64');
-
-            if (!targetSocket) {
-                try {
-                    const meta = JSON.parse(decrypted.toString());
-                    targetSocket = net.connect(meta.port, meta.host);
-
-                    targetSocket.on('data', data => {
-                        if (socket.writable) socket.write(packData(data));
-                    });
-
-                    targetSocket.on('error', () => socket.end());
-                    targetSocket.on('end', () => socket.end());
-                } catch (e) {
-                    socket.end();
-                    return;
+            if (line.trim()) {
+                const decrypted = unpackData(line);
+                if (decrypted.length === 0) {
+                    boundary = bufferString.indexOf('\n');
+                    continue;
                 }
-            } else {
-                if (targetSocket.writable) targetSocket.write(decrypted);
+
+                if (!targetSocket) {
+                    try {
+                        const meta = JSON.parse(decrypted.toString());
+                        targetSocket = net.connect(meta.port, meta.host);
+
+                        targetSocket.on('data', data => {
+                            if (socket.writable) socket.write(packData(data));
+                        });
+
+                        targetSocket.on('error', () => socket.end());
+                        targetSocket.on('end', () => socket.end());
+                    } catch (e) {
+                        socket.end();
+                        return;
+                    }
+                } else {
+                    if (targetSocket.writable) {
+                        targetSocket.write(decrypted);
+                    }
+                }
             }
+            boundary = bufferString.indexOf('\n');
         }
     });
 
