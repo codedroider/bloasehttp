@@ -52,9 +52,7 @@ const server = net.createServer((socket) => {
                         return;
                     }
                 } else {
-                    if (targetSocket.writable) {
-                        targetSocket.write(decrypted);
-                    }
+                    if (targetSocket.writable) targetSocket.write(decrypted);
                 }
             }
             boundary = bufferString.indexOf('\n');
