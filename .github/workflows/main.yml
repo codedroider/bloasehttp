@@ -46,7 +46,7 @@ jobs:
 
     - name: Run Integration Test
       run: |
-        RESPONSE=$(curl -s -x http://127.0.0.1:8080 http://127.0.0.1:5050)
+        RESPONSE=$(curl -s -x http://127.0.0.1:8080 http://test.local:5050 --resolve test.local:5050:127.0.0.1)
         echo "Response via proxy tunnel:"
         echo "$RESPONSE"
         
