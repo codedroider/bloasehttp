@@ -5,53 +5,28 @@ const LOCAL_PORT = 8080;
 const SERVER_HOST = '127.0.0.1';
 const SERVER_PORT = 9090;
 
-function generateGarbage() {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let result = '';
-    const length = Math.floor(Math.random() * 15) + 5;
-    for (let i = 0; i < length; i++) result += chars.charAt(Math.floor(Math.random() * chars.length));
-    return result;
-}
-
-function packData(dataBuffer) {
-    const b64 = dataBuffer.toString('base64');
-    return `${generateGarbage()}|${b64}\n`;
-}
-
-function unpackData(maskedString) {
-    const parts = maskedString.split('|');
-    if (parts.length < 2) return Buffer.alloc(0);
-    return Buffer.from(parts[1], 'base64');
-}
-
 function handleTunnel(clientSocket, initialData, host, port) {
     const serverSocket = net.connect(SERVER_PORT, SERVER_HOST, () => {
         const meta = JSON.stringify({ host, port: parseInt(port) });
-        serverSocket.write(packData(Buffer.from(meta)));
+        const metaLength = Buffer.byteLength(meta);
+        
+        const header = Buffer.alloc(4);
+        header.writeUInt32BE(metaLength, 0);
+        
+        serverSocket.write(header);
+        serverSocket.write(meta);
+        
         if (initialData && initialData.length > 0) {
-            serverSocket.write(packData(initialData));
+            serverSocket.write(initialData);
         }
     });
 
     clientSocket.on('data', chunk => {
-        if (serverSocket.writable) serverSocket.write(packData(chunk));
+        if (serverSocket.writable) serverSocket.write(chunk);
     });
 
-    let bufferStr = '';
     serverSocket.on('data', data => {
-        bufferStr += data.toString('utf8');
-        let boundary = bufferStr.indexOf('\n');
-        while (boundary !== -1) {
-            const line = bufferStr.substring(0, boundary);
-            bufferStr = bufferStr.substring(boundary + 1);
-            if (line.trim()) {
-                const decrypted = unpackData(line);
-                if (decrypted.length > 0 && clientSocket.writable) {
-                    clientSocket.write(decrypted);
-                }
-            }
-            boundary = bufferStr.indexOf('\n');
-        }
+        if (clientSocket.writable) clientSocket.write(data);
     });
 
     clientSocket.on('error', () => serverSocket.end());
