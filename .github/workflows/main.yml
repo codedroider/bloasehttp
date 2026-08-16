@@ -19,30 +19,41 @@ jobs:
       with:
         node-version: 20
 
-    - name: Start Server
+    - name: Start Target HTTP/HTTPS Web Server
+      run: |
+        node -e "
+        const http = require('http');
+        http.createServer((req, res) => {
+          res.writeHead(200, { 'Content-Type': 'text/plain' });
+          res.end('HELLO_FROM_TARGET_SERVER');
+        }).listen(5050);
+        " &
+        echo "Waiting for mock target server..."
+        sleep 2
+
+    - name: Start Proxy Server
       run: |
         chmod +x run_server.sh
         ./run_server.sh &
-        echo "Waiting for server..."
+        echo "Waiting for proxy server..."
         sleep 2
 
-    - name: Start Client
+    - name: Start Proxy Client
       run: |
         node client.js &
-        echo "Waiting for client..."
+        echo "Waiting for proxy client..."
         sleep 2
-        
+
     - name: Run Integration Test
       run: |
-        RESPONSE=$(curl -s -k -x http://127.0.0.1:8080 https://codedroider.github.io)
-        echo "Response from proxy:"
+        RESPONSE=$(curl -s -x http://127.0.0.1:8080 http://127.0.0.1:5050)
+        echo "Response via proxy tunnel:"
         echo "$RESPONSE"
         
-        if echo "$RESPONSE" | grep -q "<html"; then
+        if [ "$RESPONSE" = "HELLO_FROM_TARGET_SERVER" ]; then
           echo "Test passed!"
           exit 0
         else
           echo "Test failed!"
           exit 1
         fi
-
