@@ -27,10 +27,7 @@ function handleTunnel(clientSocket, initialData, host, port) {
     const serverSocket = net.connect(SERVER_PORT, SERVER_HOST, () => {
         const meta = JSON.stringify({ host, port: parseInt(port) });
         serverSocket.write(packData(Buffer.from(meta)));
-        
-        if (initialData) {
-            serverSocket.write(packData(initialData));
-        }
+        if (initialData) serverSocket.write(packData(initialData));
     });
 
     clientSocket.on('data', chunk => {
@@ -62,11 +59,15 @@ const clientServer = http.createServer((req, res) => {
     let bodyChunks = [];
     req.on('data', chunk => bodyChunks.push(chunk));
     req.on('end', () => {
-        const urlObj = new URL(req.url);
-        const port = urlObj.port || 80;
-        const host = urlObj.hostname;
+        let host = req.headers.host;
+        let port = 80;
+        if (host.includes(':')) {
+            const parts = host.split(':');
+            host = parts[0];
+            port = parseInt(parts[1]);
+        }
 
-        const reqLine = `${req.method} ${urlObj.pathname}${urlObj.search} HTTP/1.1\r\n`;
+        const reqLine = `${req.method} ${req.url} HTTP/1.1\r\n`;
         let headersStr = '';
         for (const [key, value] of Object.entries(req.headers)) {
             headersStr += `${key}: ${value}\r\n`;
@@ -78,13 +79,9 @@ const clientServer = http.createServer((req, res) => {
 
         const fakeSocket = {
             writable: true,
-            write: (data) => {
-                if (!res.writableEnded) {
-                    res.write(data);
-                }
-            },
+            write: (data) => { if (!res.writableEnded) res.write(data); },
             end: (data) => {
-                if (data) res.write(data);
+                if (data && !res.writableEnded) res.write(data);
                 res.end();
             }
         };
@@ -95,8 +92,8 @@ const clientServer = http.createServer((req, res) => {
 
 clientServer.on('connect', (req, clientSocket, head) => {
     clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-    const [host, port] = req.url.split(':');
-    handleTunnel(clientSocket, head, host, port || 443);
+    const parts = req.url.split(':');
+    handleTunnel(clientSocket, head, parts[0], parts[1] || 443);
 });
 
 clientServer.listen(LOCAL_PORT);
