@@ -34,7 +34,7 @@ jobs:
         
     - name: Run Integration Test
       run: |
-        RESPONSE=$(curl -s -k -x http://127.0.0.1:8080 https://github.io)
+        RESPONSE=$(curl -s -k -x http://127.0.0.1:8080 https://codedroider.github.io)
         echo "Response from proxy:"
         echo "$RESPONSE"
         
