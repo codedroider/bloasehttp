@@ -65,8 +65,9 @@ remoteServer.on('connection', (socket) => {
     let bufferString = '';
 
     socket.on('data', chunk => {
+        bufferString += chunk.toString();
+        
         if (!targetSocket) {
-            bufferString += chunk.toString();
             const firstLineEnd = bufferString.indexOf('\n');
             if (firstLineEnd === -1) return;
 
@@ -87,8 +88,7 @@ remoteServer.on('connection', (socket) => {
                     const [host, port] = meta.url.split(':');
                     targetSocket = net.connect(port || 443, host, () => {
                         if (bufferString.length > 0) {
-                            processLines(bufferString);
-                            bufferString = '';
+                            processLines();
                         }
                     });
 
@@ -101,18 +101,22 @@ remoteServer.on('connection', (socket) => {
                 }
             } catch (e) { socket.end(); }
         } else {
-            processLines(chunk.toString());
+            processLines();
         }
     });
 
-    function processLines(str) {
-        const lines = str.split('\n');
-        for (let line of lines) {
-            if (!line.trim()) continue;
-            const decrypted = unpackData(line);
-            if (decrypted.length > 0 && targetSocket && targetSocket.writable) {
-                targetSocket.write(decrypted);
+    function processLines() {
+        let boundary = bufferString.indexOf('\n');
+        while (boundary !== -1) {
+            const line = bufferString.substring(0, boundary);
+            bufferString = bufferString.substring(boundary + 1);
+            if (line.trim()) {
+                const decrypted = unpackData(line);
+                if (decrypted.length > 0 && targetSocket && targetSocket.writable) {
+                    targetSocket.write(decrypted);
+                }
             }
+            boundary = bufferString.indexOf('\n');
         }
     }
 
