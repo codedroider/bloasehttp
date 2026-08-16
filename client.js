@@ -14,38 +14,41 @@ function generateGarbage() {
 }
 
 function packData(dataBuffer) {
-    return `${generateGarbage()}|${dataBuffer.toString('base64')}\n`;
-}
-
-function unpackData(maskedString) {
-    const parts = maskedString.split('|');
-    if (parts.length < 2) return Buffer.alloc(0);
-    return Buffer.from(parts, 'base64');
+    const b64 = dataBuffer.toString('base64');
+    const payload = `${generateGarbage()}|${b64}`;
+    return Buffer.concat([Buffer.from(`${Buffer.byteLength(payload)}:`), Buffer.from(payload)]);
 }
 
 function handleTunnel(clientSocket, initialData, host, port) {
     const serverSocket = net.connect(SERVER_PORT, SERVER_HOST, () => {
         const meta = JSON.stringify({ host, port: parseInt(port) });
         serverSocket.write(packData(Buffer.from(meta)));
-        if (initialData) serverSocket.write(packData(initialData));
+        if (initialData && initialData.length > 0) {
+            serverSocket.write(packData(initialData));
+        }
     });
 
     clientSocket.on('data', chunk => {
         if (serverSocket.writable) serverSocket.write(packData(chunk));
     });
 
-    let bufferStr = '';
+    let buffer = Buffer.alloc(0);
     serverSocket.on('data', data => {
-        bufferStr += data.toString();
-        let boundary = bufferStr.indexOf('\n');
-        while (boundary !== -1) {
-            const line = bufferStr.substring(0, boundary);
-            bufferStr = bufferStr.substring(boundary + 1);
-            if (line.trim()) {
-                const decrypted = unpackData(line);
-                if (decrypted.length > 0 && clientSocket.writable) clientSocket.write(decrypted);
+        buffer = Buffer.concat([buffer, data]);
+        while (true) {
+            const index = buffer.indexOf(':');
+            if (index === -1) break;
+            const length = parseInt(buffer.subarray(0, index).toString());
+            if (isNaN(length)) { buffer = Buffer.alloc(0); break; }
+            if (buffer.length < index + 1 + length) break;
+            
+            const payload = buffer.subarray(index + 1, index + 1 + length).toString();
+            buffer = buffer.subarray(index + 1 + length);
+            
+            const parts = payload.split('|');
+            if (parts.length >= 2 && clientSocket.writable) {
+                clientSocket.write(Buffer.from(parts[1], 'base64'));
             }
-            boundary = bufferStr.indexOf('\n');
         }
     });
 
@@ -59,7 +62,7 @@ const clientServer = http.createServer((req, res) => {
     let bodyChunks = [];
     req.on('data', chunk => bodyChunks.push(chunk));
     req.on('end', () => {
-        let host = req.headers.host;
+        let host = req.headers.host || '';
         let port = 80;
         if (host.includes(':')) {
             const parts = host.split(':');
@@ -85,15 +88,20 @@ const clientServer = http.createServer((req, res) => {
                 res.end();
             }
         };
-
         handleTunnel(fakeSocket, httpPayload, host, port);
     });
 });
 
 clientServer.on('connect', (req, clientSocket, head) => {
     clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-    const parts = req.url.split(':');
-    handleTunnel(clientSocket, head, parts[0], parts[1] || 443);
+    let host = req.url;
+    let port = 443;
+    if (host.includes(':')) {
+        const parts = host.split(':');
+        host = parts[0];
+        port = parseInt(parts[1]);
+    }
+    handleTunnel(clientSocket, head, host, port);
 });
 
 clientServer.listen(LOCAL_PORT);
