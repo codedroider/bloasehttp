@@ -14,59 +14,27 @@ function generateGarbage() {
 }
 
 function packData(dataBuffer) {
-    return `${generateGarbage()}|${dataBuffer.toString('base64')}`;
+    return `${generateGarbage()}|${dataBuffer.toString('base64')}\n`;
 }
 
 function unpackData(maskedString) {
     const parts = maskedString.split('|');
     if (parts.length < 2) return Buffer.alloc(0);
-    return Buffer.from(parts[1], 'base64');
+    return Buffer.from(parts, 'base64');
 }
 
-const clientServer = http.createServer((req, res) => {
-    let bodyChunks = [];
-    req.on('data', chunk => bodyChunks.push(chunk));
-    req.on('end', () => {
-        const requestMetadata = {
-            isConnect: false,
-            method: req.method,
-            url: req.url,
-            headers: req.headers,
-            body: Buffer.concat(bodyChunks).toString('base64')
-        };
-
-        const packedRequest = packData(Buffer.from(JSON.stringify(requestMetadata)));
-        const proxyReq = http.request({
-            hostname: SERVER_HOST, port: SERVER_PORT, path: '/', method: 'POST',
-            headers: { 'Content-Type': 'text/plain', 'Content-Length': Buffer.byteLength(packedRequest) }
-        }, (proxyRes) => {
-            let resChunks = [];
-            proxyRes.on('data', chunk => resChunks.push(chunk));
-            proxyRes.on('end', () => {
-                const decryptedBuffer = unpackData(Buffer.concat(resChunks).toString());
-                try {
-                    const responseData = JSON.parse(decryptedBuffer.toString());
-                    res.writeHead(responseData.statusCode, responseData.headers);
-                    res.end(Buffer.from(responseData.body, 'base64'));
-                } catch (e) { res.writeHead(500); res.end(); }
-            });
-        });
-        proxyReq.on('error', () => { res.writeHead(502); res.end(); });
-        proxyReq.write(packedRequest);
-        proxyReq.end();
-    });
-});
-
-clientServer.on('connect', (req, clientSocket, head) => {
+function handleTunnel(clientSocket, initialData, host, port) {
     const serverSocket = net.connect(SERVER_PORT, SERVER_HOST, () => {
-        clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-        const requestMetadata = { isConnect: true, url: req.url };
-        serverSocket.write(packData(Buffer.from(JSON.stringify(requestMetadata))) + '\n'); 
-        if (head && head.length > 0) serverSocket.write(packData(head) + '\n');
+        const meta = JSON.stringify({ host, port: parseInt(port) });
+        serverSocket.write(packData(Buffer.from(meta)));
+        
+        if (initialData) {
+            serverSocket.write(packData(initialData));
+        }
     });
 
     clientSocket.on('data', chunk => {
-        if (serverSocket.writable) serverSocket.write(packData(chunk) + '\n');
+        if (serverSocket.writable) serverSocket.write(packData(chunk));
     });
 
     let bufferStr = '';
@@ -88,6 +56,47 @@ clientServer.on('connect', (req, clientSocket, head) => {
     serverSocket.on('error', () => clientSocket.end());
     clientSocket.on('end', () => serverSocket.end());
     serverSocket.on('end', () => clientSocket.end());
+}
+
+const clientServer = http.createServer((req, res) => {
+    let bodyChunks = [];
+    req.on('data', chunk => bodyChunks.push(chunk));
+    req.on('end', () => {
+        const urlObj = new URL(req.url);
+        const port = urlObj.port || 80;
+        const host = urlObj.hostname;
+
+        const reqLine = `${req.method} ${urlObj.pathname}${urlObj.search} HTTP/1.1\r\n`;
+        let headersStr = '';
+        for (const [key, value] of Object.entries(req.headers)) {
+            headersStr += `${key}: ${value}\r\n`;
+        }
+        const httpPayload = Buffer.concat([
+            Buffer.from(reqLine + headersStr + '\r\n'),
+            Buffer.concat(bodyChunks)
+        ]);
+
+        const fakeSocket = {
+            writable: true,
+            write: (data) => {
+                if (!res.writableEnded) {
+                    res.write(data);
+                }
+            },
+            end: (data) => {
+                if (data) res.write(data);
+                res.end();
+            }
+        };
+
+        handleTunnel(fakeSocket, httpPayload, host, port);
+    });
+});
+
+clientServer.on('connect', (req, clientSocket, head) => {
+    clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    const [host, port] = req.url.split(':');
+    handleTunnel(clientSocket, head, host, port || 443);
 });
 
 clientServer.listen(LOCAL_PORT);
