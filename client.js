@@ -55,7 +55,7 @@ function handleTunnel(clientSocket, initialData, host, port) {
     clientSocket.on('error', () => serverSocket.end());
     serverSocket.on('error', () => clientSocket.end());
     clientSocket.on('end', () => serverSocket.end());
-    serverSocket.on('end', () => clientSocket.end());
+    clientSocket.on('end', () => clientSocket.end());
 }
 
 const clientServer = http.createServer((req, res) => {
