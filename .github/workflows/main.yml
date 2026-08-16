@@ -1,0 +1,47 @@
+name: Test Proxy
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+
+    - name: Start Server
+      run: |
+        chmod +x run_server.sh
+        ./run_server.sh &
+        echo "Waiting for server..."
+        sleep 2
+
+    - name: Start Client
+      run: |
+        node client.js &
+        echo "Waiting for client..."
+        sleep 2
+
+    - name: Run Integration Test
+      run: |
+        RESPONSE=$(curl -s -x http://127.0.0.1:8080 http://codedroider.github.io)
+        echo "Response from proxy:"
+        echo "$RESPONSE"
+        
+        if echo "$RESPONSE" | grep -q "codedroider.github.io"; then
+          echo "Test passed!"
+          exit 0
+        else
+          echo "Test failed!"
+          exit 1
+        fi
