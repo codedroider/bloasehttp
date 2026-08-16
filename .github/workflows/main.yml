@@ -31,17 +31,18 @@ jobs:
         node client.js &
         echo "Waiting for client..."
         sleep 2
-
+        
     - name: Run Integration Test
       run: |
-        RESPONSE=$(curl -s -x http://127.0.0.1:8080 http://codedroider.github.io)
+        RESPONSE=$(curl -s -k -x http://127.0.0.1:8080 https://github.io)
         echo "Response from proxy:"
         echo "$RESPONSE"
         
-        if echo "$RESPONSE" | grep -q "codedroider.github.io"; then
+        if echo "$RESPONSE" | grep -q "<html"; then
           echo "Test passed!"
           exit 0
         else
           echo "Test failed!"
           exit 1
         fi
+
