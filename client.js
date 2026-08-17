@@ -1,84 +1,108 @@
 const http = require('http');
 const net = require('net');
+const crypto = require('crypto');
 
-const LOCAL_PORT = 8080;
-const SERVER_HOST = '127.0.0.1';
-const SERVER_PORT = 9090;
+const LOCAL_PROXY_PORT = 8080;
+const REMOTE_SERVER_HOST = 'localhost'; // your server here
+const REMOTE_SERVER_PORT = 3000;
 
-function handleTunnel(clientSocket, initialData, host, port) {
-    const serverSocket = net.connect(SERVER_PORT, SERVER_HOST, () => {
-        const meta = JSON.stringify({ host, port: parseInt(port) });
-        const metaLength = Buffer.byteLength(meta);
-        
-        const header = Buffer.alloc(4);
-        header.writeUInt32BE(metaLength, 0);
-        
-        serverSocket.write(header);
-        serverSocket.write(meta);
-        
-        if (initialData && initialData.length > 0) {
-            serverSocket.write(initialData);
-        }
-    });
-
-    clientSocket.on('data', chunk => {
-        if (serverSocket.writable) serverSocket.write(chunk);
-    });
-
-    serverSocket.on('data', data => {
-        if (clientSocket.writable) clientSocket.write(data);
-    });
-
-    clientSocket.on('error', () => serverSocket.end());
-    serverSocket.on('error', () => clientSocket.end());
-    clientSocket.on('end', () => serverSocket.end());
-    serverSocket.on('end', () => clientSocket.end());
+function generateJunk() {
+    return crypto.randomBytes(19).toString('base64').substring(0, 25) + '\n';
 }
 
-const clientServer = http.createServer((req, res) => {
-    let bodyChunks = [];
-    req.on('data', chunk => bodyChunks.push(chunk));
-    req.on('end', () => {
-        let host = req.headers.host || '';
-        let port = 80;
-        if (host.includes(':')) {
-            const parts = host.split(':');
-            host = parts[0];
-            port = parseInt(parts[1]);
-        }
+const server = http.createServer((req, res) => {
+    console.log(`[Client Proxy] Handling HTTP request to: ${req.url}`);
+    
+    const targetUrl = new URL(req.url);
+    const targetHost = `${targetUrl.hostname}:${targetUrl.port || 80}`;
+    
+    handleTunnel(targetHost, req, res, false);
+});
 
-        const reqLine = `${req.method} ${req.url} HTTP/1.1\r\n`;
-        let headersStr = '';
-        for (const [key, value] of Object.entries(req.headers)) {
-            headersStr += `${key}: ${value}\r\n`;
-        }
-        const httpPayload = Buffer.concat([
-            Buffer.from(reqLine + headersStr + '\r\n'),
-            Buffer.concat(bodyChunks)
-        ]);
+server.on('connect', (req, clientSocket, head) => {
+    console.log(`[Client Proxy] Handling HTTPS tunnel to: ${req.url}`);
+    handleTunnel(req.url, clientSocket, head, true);
+});
 
-        const fakeSocket = {
-            writable: true,
-            write: (data) => { if (!res.writableEnded) res.write(data); },
-            end: (data) => {
-                if (data && !res.writableEnded) res.write(data);
-                res.end();
+function handleTunnel(targetHost, clientReqOrSocket, resOrHead, isHttps) {
+    const remoteSocket = net.connect(REMOTE_SERVER_PORT, REMOTE_SERVER_HOST, () => {
+        remoteSocket.write(generateJunk());
+
+        const encodedTarget = Buffer.from(targetHost).toString('base64') + '\n';
+        remoteSocket.write(encodedTarget);
+
+        if (isHttps) {
+            const clientSocket = clientReqOrSocket;
+            const head = resOrHead;
+
+            clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+            if (head && head.length > 0) {
+                remoteSocket.write(Buffer.from(head).toString('base64') + '\n');
             }
-        };
-        handleTunnel(fakeSocket, httpPayload, host, port);
+
+            clientSocket.on('data', (chunk) => {
+                remoteSocket.write(chunk.toString('base64') + '\n');
+            });
+
+            let responseBuffer = '';
+            remoteSocket.on('data', (chunk) => {
+                responseBuffer += chunk.toString('utf8');
+                const lines = responseBuffer.split('\n');
+                responseBuffer = lines.pop();
+
+                for (const line of lines) {
+                    if (line.trim()) {
+                        clientSocket.write(Buffer.from(line.trim(), 'base64'));
+                    }
+                }
+            });
+
+            clientSocket.on('error', () => remoteSocket.end());
+            remoteSocket.on('error', () => clientSocket.end());
+            clientSocket.on('close', () => remoteSocket.end());
+            remoteSocket.on('close', () => clientSocket.end());
+        } else {
+            const req = clientReqOrSocket;
+            const res = resOrHead;
+
+            let initialPayload = `${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`;
+            for (const [key, value] of Object.entries(req.headers)) {
+                initialPayload += `${key}: ${value}\r\n`;
+            }
+            initialPayload += '\r\n';
+
+            remoteSocket.write(Buffer.from(initialPayload).toString('base64') + '\n');
+
+            req.on('data', (chunk) => {
+                remoteSocket.write(chunk.toString('base64') + '\n');
+            });
+
+            let responseBuffer = '';
+            remoteSocket.on('data', (chunk) => {
+                responseBuffer += chunk.toString('utf8');
+                const lines = responseBuffer.split('\n');
+                responseBuffer = lines.pop();
+
+                for (const line of lines) {
+                    if (line.trim()) {
+                        res.write(Buffer.from(line.trim(), 'base64'));
+                    }
+                }
+            });
+
+            req.on('end', () => {});
+            remoteSocket.on('end', () => res.end());
+            remoteSocket.on('error', () => res.end());
+        }
     });
-});
 
-clientServer.on('connect', (req, clientSocket, head) => {
-    clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-    let host = req.url;
-    let port = 443;
-    if (host.includes(':')) {
-        const parts = host.split(':');
-        host = parts[0];
-        port = parseInt(parts[1]);
-    }
-    handleTunnel(clientSocket, head, host, port);
-});
+    remoteSocket.on('error', (err) => {
+        console.error('[Client Proxy] Connection to remote obfuscator failed:', err.message);
+        if (isHttps) clientReqOrSocket.end(); 
+        else resOrHead.end();
+    });
+}
 
-clientServer.listen(LOCAL_PORT);
+server.listen(LOCAL_PROXY_PORT, () => {
+    console.log(`[Client Proxy] Proxy available at http://${REMOTE_SERVER_HOST}:${LOCAL_PROXY_PORT}`);
+});
