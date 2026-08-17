@@ -1,99 +1,88 @@
 const net = require('net');
 
-const PORT = 3000;
+const SERVER_PORT = 3000;
 
 const server = net.createServer((clientSocket) => {
-    let buffer = '';
+    let isJunkSkipped = false;
+    let isFirstLine = true;
     let targetSocket = null;
-    let isConnected = false;
-    let hasSkippedJunk = false;
-
-    console.log('[Server] Client connected');
+    let isHttpsTunnel = false;
+    let buffer = '';
 
     clientSocket.on('data', (chunk) => {
         buffer += chunk.toString('utf8');
-        
-        while (true) {
-            const lineEnd = buffer.indexOf('\n');
-            if (lineEnd === -1) break;
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
 
-            const line = buffer.substring(0, lineEnd).trim();
-            buffer = buffer.substring(lineEnd + 1);
+        for (const line of lines) {
+            const cleanLine = line.trim();
+            if (!cleanLine) continue;
 
-            if (!hasSkippedJunk) {
-                hasSkippedJunk = true;
-                console.log('[Server] Skipped 25 junk characters');
+            if (!isJunkSkipped) {
+                isJunkSkipped = true;
                 continue;
             }
 
-            if (!isConnected) {
+            if (isFirstLine) {
+                isFirstLine = false;
+                
+                let decodedHeader = '';
                 try {
-                    const decodedTarget = Buffer.from(line, 'base64').toString('utf8');
-                    const [hostname, portStr] = decodedTarget.split(':');
-                    const port = parseInt(portStr, 10) || 80;
-
-                    console.log(`[Server] Opening tunnel to ${hostname}:${port}`);
-
-                    targetSocket = net.connect(port, hostname, () => {
-                        isConnected = true;
-                        console.log(`[Server] Tunnel established to ${hostname}:${port}`);
-                        
-                        if (buffer.length > 0) {
-                            handleClientLines(buffer);
-                            buffer = '';
-                        }
-                    });
-
-                    targetSocket.on('data', (targetChunk) => {
-                        const base64Data = targetChunk.toString('base64') + '\n';
-                        clientSocket.write(base64Data);
-                    });
-
-                    targetSocket.on('error', (err) => {
-                        console.error('[Server] Target socket error:', err.message);
-                        clientSocket.end();
-                    });
-
-                    targetSocket.on('close', () => {
-                        clientSocket.end();
-                    });
-
+                    decodedHeader = Buffer.from(cleanLine, 'base64').toString('utf8');
                 } catch (e) {
-                    console.error('[Server] Failed to parse target metadata');
-                    clientSocket.end();
+                    return clientSocket.end();
                 }
-                break;
-            } else {
-                if (line) {
-                    const rawBuffer = Buffer.from(line, 'base64');
-                    targetSocket.write(rawBuffer);
+
+                let targetHost = '';
+                if (decodedHeader.startsWith('TUNNEL_HTTPS:')) {
+                    isHttpsTunnel = true;
+                    targetHost = decodedHeader.replace('TUNNEL_HTTPS:', '');
+                } else if (decodedHeader.startsWith('TUNNEL_HTTP:')) {
+                    isHttpsTunnel = false;
+                    targetHost = decodedHeader.replace('TUNNEL_HTTP:', '');
+                } else {
+                    isHttpsTunnel = false;
+                    targetHost = decodedHeader;
+                }
+
+                const [host, port] = targetHost.split(':');
+                const targetPort = port ? parseInt(port) : (isHttpsTunnel ? 443 : 80);
+
+                targetSocket = net.connect(targetPort, host);
+
+                targetSocket.on('data', (targetChunk) => {
+                    const encodedResponse = isHttpsTunnel 
+                        ? targetChunk.toString('hex') 
+                        : targetChunk.toString('base64');
+                    clientSocket.write(encodedResponse + '\n');
+                });
+
+                targetSocket.on('error', () => clientSocket.end());
+                targetSocket.on('close', () => clientSocket.end());
+                targetSocket.on('end', () => clientSocket.end());
+                continue;
+            }
+
+            if (targetSocket && targetSocket.writable) {
+                try {
+                    const rawPayload = isHttpsTunnel 
+                        ? Buffer.from(cleanLine, 'hex') 
+                        : Buffer.from(cleanLine, 'base64');
+                    targetSocket.write(rawPayload);
+                } catch (e) {
+                    return clientSocket.end();
                 }
             }
         }
     });
 
-    function handleClientLines(strData) {
-        const lines = strData.split('\n');
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i].trim();
-            if (line && targetSocket) {
-                const rawBuffer = Buffer.from(line, 'base64');
-                targetSocket.write(rawBuffer);
-            }
-        }
-    }
-
-    clientSocket.on('error', (err) => {
-        console.error('[Server] Client socket error:', err.message);
+    clientSocket.on('error', () => {
         if (targetSocket) targetSocket.end();
     });
 
     clientSocket.on('close', () => {
-        console.log('[Server] Client disconnected');
         if (targetSocket) targetSocket.end();
     });
 });
 
-server.listen(PORT, () => {
-    console.log(`[Server] TCP Server running on port ${PORT}`);
-});
+server.listen(SERVER_PORT);
